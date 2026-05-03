@@ -104,26 +104,46 @@ def get_turtle_signals(ticker_name):
         current_price = df['Close'].iloc[-1]
         current_atr = df['ATR'].iloc[-1]
         
-        # S1 (20-day)
+        # S1 (20-day breakout)
         s1_data = df.iloc[-21:-1]
         s1_high = s1_data['High'].max()
         s1_low = s1_data['Low'].min()
         
-        # S2 (55-day)
+        # S1 Exit (10-day)
+        s1_exit_data = df.iloc[-11:-1]
+        s1_exit_high = s1_exit_data['High'].max()
+        s1_exit_low = s1_exit_data['Low'].min()
+        
+        # S2 (55-day breakout)
         s2_data = df.iloc[-56:-1]
         s2_high = s2_data['High'].max()
         s2_low = s2_data['Low'].min()
         
+        # S2 Exit (20-day) - same as S1 entry data
+        s2_exit_high = s1_high
+        s2_exit_low = s1_low
+        
         s1_raw_signal = "LONG" if current_price > s1_high else ("SHORT" if current_price < s1_low else "NONE")
+        if s1_raw_signal == "NONE":
+            if current_price >= (s1_high - current_atr):
+                s1_raw_signal = "NEAR(LONG)"
+            elif current_price <= (s1_low + current_atr):
+                s1_raw_signal = "NEAR(SHORT)"
+
         s2_signal = "LONG" if current_price > s2_high else ("SHORT" if current_price < s2_low else "NONE")
+        if s2_signal == "NONE":
+            if current_price >= (s2_high - current_atr):
+                s2_signal = "NEAR(LONG)"
+            elif current_price <= (s2_low + current_atr):
+                s2_signal = "NEAR(SHORT)"
         
         # S1 Skip Rule
         is_skip = False
-        if s1_raw_signal != "NONE":
+        if "LONG" in s1_raw_signal or "SHORT" in s1_raw_signal:
             is_skip = was_last_s1_winner(df)
             
         s1_final_signal = s1_raw_signal
-        if is_skip and s1_raw_signal != "NONE":
+        if is_skip and ("LONG" in s1_raw_signal or "SHORT" in s1_raw_signal):
             s1_final_signal = f"SKIP({s1_raw_signal})"
             
         return {
@@ -133,13 +153,49 @@ def get_turtle_signals(ticker_name):
             "atr": current_atr,
             "s1_high": s1_high,
             "s1_low": s1_low,
+            "s1_exit_h": s1_exit_high,
+            "s1_exit_l": s1_exit_low,
             "s2_high": s2_high,
             "s2_low": s2_low,
+            "s2_exit_h": s2_exit_high,
+            "s2_exit_l": s2_exit_low,
             "s1_signal": s1_final_signal,
             "s2_signal": s2_signal
         }
     except Exception as e:
         return {"error": str(e)}
+
+def print_results_table(title, results, bias):
+    if not results:
+        return
+    
+    print(f"\n>>> {title} <<<")
+    if bias == "LONG":
+        header = f"{'Ticker':<8} | {'Price':<10} | {'ATR':<8} | {'S1 (20d)':<12} | {'S1 Ent(H)/Ext(L)':<20} | {'S2 (55d)':<12} | {'S2 Ent(H)/Ext(L)':<20}"
+    elif bias == "SHORT":
+        header = f"{'Ticker':<8} | {'Price':<10} | {'ATR':<8} | {'S1 (20d)':<12} | {'S1 Ent(L)/Ext(H)':<20} | {'S2 (55d)':<12} | {'S2 Ent(L)/Ext(H)':<20}"
+    else:
+        header = f"{'Ticker':<8} | {'Price':<10} | {'ATR':<8} | {'S1 (20d)':<12} | {'S1 High/Low':<20} | {'S2 (55d)':<12} | {'S2 High/Low':<20}"
+        
+    print(header)
+    print("-" * len(header))
+    
+    for r in results:
+        if "error" in r:
+            print(f"{r.get('ticker', 'UNKNOWN'):<8} | Error: {r['error']}")
+            continue
+            
+        if bias == "LONG":
+            s1_levels = f"{r['s1_high']:.2f} / {r['s1_exit_l']:.2f}"
+            s2_levels = f"{r['s2_high']:.2f} / {r['s2_exit_l']:.2f}"
+        elif bias == "SHORT":
+            s1_levels = f"{r['s1_low']:.2f} / {r['s1_exit_h']:.2f}"
+            s2_levels = f"{r['s2_low']:.2f} / {r['s2_exit_h']:.2f}"
+        else:
+            s1_levels = f"{r['s1_high']:.1f} / {r['s1_low']:.1f}"
+            s2_levels = f"{r['s2_high']:.1f} / {r['s2_low']:.1f}"
+            
+        print(f"{r['ticker']:<8} | {r['current_price']:<10.2f} | {r['atr']:<8.2f} | {r['s1_signal']:<12} | {s1_levels:<20} | {r['s2_signal']:<12} | {s2_levels:<20}")
 
 def main():
     if len(sys.argv) < 2:
@@ -158,20 +214,28 @@ def main():
         print("No data found for the provided tickers.")
         return
 
-    # Updated header with 20d and 55d
-    header = f"{'Ticker':<10} | {'Date':<10} | {'Price':<10} | {'ATR (N)':<10} | {'S1 (20d)':<12} | {'S1 Levels (H/L)':<20} | {'S2 (55d)':<12} | {'S2 Levels (H/L)':<20}"
-    print(header)
-    print("-" * len(header))
-    
+    longs = []
+    shorts = []
+    neutrals = []
+
     for r in results:
         if "error" in r:
-            print(f"{r.get('ticker', 'UNKNOWN'):<10} | Error: {r['error']}")
+            neutrals.append(r)
             continue
             
-        s1_levels = f"{r['s1_high']:.2f}/{r['s1_low']:.2f}"
-        s2_levels = f"{r['s2_high']:.2f}/{r['s2_low']:.2f}"
+        is_long = "LONG" in r['s1_signal'] or "LONG" in r['s2_signal']
+        is_short = "SHORT" in r['s1_signal'] or "SHORT" in r['s2_signal']
         
-        print(f"{r['ticker']:<10} | {r['date']:<10} | {r['current_price']:<10.2f} | {r['atr']:<10.2f} | {r['s1_signal']:<12} | {s1_levels:<20} | {r['s2_signal']:<12} | {s2_levels:<20}")
+        if is_long:
+            longs.append(r)
+        elif is_short:
+            shorts.append(r)
+        else:
+            neutrals.append(r)
+
+    print_results_table("LONG CANDIDATES", longs, "LONG")
+    print_results_table("SHORT CANDIDATES", shorts, "SHORT")
+    print_results_table("NEUTRAL / NO SIGNALS", neutrals, None)
 
 if __name__ == "__main__":
     main()
